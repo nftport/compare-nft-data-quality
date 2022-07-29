@@ -10,8 +10,10 @@ from requests.adapters import Retry
 import json
 import traceback
 import pandas as pd
+from datetime import datetime
+from datetime import timedelta
 
-PROCESS_COUNT = 32
+PROCESS_COUNT = 64
 TOP_K_COLLECTIONS = 10000  # Max 10000
 TOP_COLLECTIONS_PATH = "top_collections.csv"
 STATS_OUTPUT_FILE_PATH = "stats.md"
@@ -23,9 +25,15 @@ MORALIS_API_KEY = "API-KEY"
 MORALIS_BASE_URL = "https://deep-index.moralis.io/api/v2/nft"
 QUICKNODE_URL = "YOUR-QUICKNODE-URL"
 
-MAX_PAGES_PER_CONTRACT = 1000000  # Safe limit especially for transactions which can have lots of pages
+FROM_BLOCK = 15191473  # Alchemy gives results in ascending order for transactions
+# to compare latest 7 days transactions, we'll specify the block number.
+# Remember to change this value depending on the date you are running the script
 
 PROVIDERS = ["nftport", "alchemy", "moralis", "quicknode"]
+TRANSACTION_START_LIMIT = datetime.utcnow()
+TRANSACTION_LOOKBACK_LIMIT = datetime.utcnow() - timedelta(days=7)
+
+NULL_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 @dataclass(frozen=False)
@@ -134,7 +142,7 @@ def _get_nftport_floor_price(contract_address: str):
     return response.json().get("statistics", {}).get("floor_price")
 
 
-def _execute_alechmey_request(contract_address: str, start_token: str):
+def _execute_alchemy_request(contract_address: str, start_token: str):
     url = f"{ALCHEMY_BASE_URL}/getNFTsForCollection"
     querystring = {
         "contractAddress": contract_address,
@@ -154,11 +162,17 @@ def _execute_alchemy_transactions(contract_address: str, page_key: str):
     url = f"https://eth-mainnet.alchemyapi.io/v2/{ALCHEMY_API_KEY}"
     data = {
         "jsonrpc": "2.0",
+        "id": 1,
         "method": "alchemy_getAssetTransfers",
         "params": [
             {
                 "contractAddresses": [contract_address],
-                "category": ["erc721", "erc1155"]
+                "category": ["erc721", "erc1155"],
+                "excludeZeroValue": True,
+                "withMetadata": True,
+                "maxCount": "0x3e8",
+                "fromBlock": hex(FROM_BLOCK)
+                # We want to exclude zero value events as they are not sale
             }
         ]
     }
@@ -276,7 +290,7 @@ def _execute_quicknode_request(contract_address: str, page_number: int):
 
 
 def _crunch_nftport_stats(response, stats: ContractStats):
-    for nft in response.get("nfts"):
+    for nft in response.get("nfts", []):
         if nft.get("metadata"):
             stats.num_has_metadata += 1
         if nft.get("cached_file_url"):
@@ -286,7 +300,7 @@ def _crunch_nftport_stats(response, stats: ContractStats):
 
 
 def _crunch_alechemy_stats(response, stats: ContractStats):
-    for nft in response.get("nfts"):
+    for nft in response.get("nfts", []):
         if nft.get("metadata"):
             stats.num_has_metadata += 1
             media = nft.get("media")
@@ -299,7 +313,7 @@ def _crunch_alechemy_stats(response, stats: ContractStats):
 
 
 def _crunch_moralis_stats(response, stats: ContractStats):
-    for nft in response.get("result"):
+    for nft in response.get("result", []):
         if nft.get("metadata"):
             stats.num_has_metadata += 1
         # Moralis does not have cached files
@@ -320,17 +334,14 @@ def _crunch_quicknode_stats(response, stats: ContractStats):
 def _get_nftport_contract_stats(contract_address: str):
     page_number = 1
     stats = ContractStats()
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_nftport_request(
                 contract_address=contract_address, page_number=page_number)
             stats = _crunch_nftport_stats(response, stats)
             if not response.get("nfts"):
                 break
+            page_number += 1
         if _get_nftport_floor_price(contract_address):
             stats.has_floor_price = True
     except Exception:
@@ -342,13 +353,9 @@ def _get_nftport_contract_stats(contract_address: str):
 def _get_alchemy_contract_stats(contract_address: str):
     start_token = ""
     stats = ContractStats()
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
-            response = _execute_alechmey_request(
+            response = _execute_alchemy_request(
                 contract_address=contract_address, start_token=start_token)
             start_token = response.get("nextToken")
             stats = _crunch_alechemy_stats(response, stats)
@@ -365,12 +372,8 @@ def _get_alchemy_contract_stats(contract_address: str):
 def _get_moralis_contract_stats(contract_address: str):
     cursor = None
     stats = ContractStats()
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_moralis_request(
                 contract_address=contract_address, cursor=cursor)
             cursor = response.get("cursor")
@@ -388,17 +391,14 @@ def _get_moralis_contract_stats(contract_address: str):
 def _get_quicknode_contract_stats(contract_address: str):
     page_number = 1
     stats = ContractStats()
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_quicknode_request(
                 contract_address=contract_address, page_number=page_number)
             stats = _crunch_quicknode_stats(response, stats)
             if not response.get("result", {}).get("tokens"):
                 break
+            page_number += 1
         # Quicknode does not have floor price
     except Exception:
         print(f"Following error occurred for contract {contract_address}")
@@ -409,17 +409,19 @@ def _get_quicknode_contract_stats(contract_address: str):
 def _get_nftport_transaction_stats(contract_address: str) -> int:
     continuation = ""
     sales = 0
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_nftport_transactions(
                 contract_address=contract_address, continuation=continuation)
             continuation = response.get("continuation")
-            transactions = response.get("transactions")
+            transactions = response.get("transactions", [])
             for t in transactions:
+                transaction_date = datetime.fromisoformat(
+                    t.get("transaction_date"))
+                if transaction_date > TRANSACTION_START_LIMIT:
+                    continue
+                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    break
                 if t.get("type") == "sale" and t.get("price_details"):
                     sales += 1
             if not continuation:
@@ -433,20 +435,25 @@ def _get_nftport_transaction_stats(contract_address: str) -> int:
 def _get_alchemy_transaction_stats(contract_address: str) -> int:
     page_key = None
     sales = 0
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_alchemy_transactions(
                 contract_address=contract_address, page_key=page_key)
             page_key = response.get("result", {}).get("pageKey")
             transactions = response.get("result", {}).get("transfers", [])
             for t in transactions:
+                transaction_date = datetime.fromisoformat(
+                    t.get("metadata").get("blockTimestamp")[:-1])
+                if transaction_date > TRANSACTION_START_LIMIT:
+                    continue
+                if t.get("fromAddress") == NULL_ADDRESS or t.get(
+                        "toAddress") == NULL_ADDRESS:
+                    # Exclude mint and burn
+                    continue
+                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    break
                 if t.get("value"):
                     sales += 1
-                    print(t.get("value"))
             if not page_key:
                 break
     except Exception:
@@ -458,17 +465,23 @@ def _get_alchemy_transaction_stats(contract_address: str) -> int:
 def _get_moralis_transaction_stats(contract_address: str) -> int:
     cursor = None
     sales = 0
-    i = 0
     try:
         while True:
-            i += 1
-            if i > MAX_PAGES_PER_CONTRACT:
-                break
             response = _execute_moralis_transactions(
                 contract_address=contract_address, cursor=cursor)
             cursor = response.get("cursor")
             transactions = response.get("result", [])
             for t in transactions:
+                transaction_date = datetime.fromisoformat(
+                    t.get("block_timestamp")[:-1])
+                if transaction_date > TRANSACTION_START_LIMIT:
+                    continue
+                if t.get("from_address") == NULL_ADDRESS or t.get(
+                        "to_address") == NULL_ADDRESS:
+                    # Exclude mint and burn
+                    continue
+                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    break
                 price = int(t.get("value", 0))
                 if price > 0:
                     # Moralis bundles sales together with transfer, value > 0 means sale
