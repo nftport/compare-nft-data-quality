@@ -409,6 +409,7 @@ def _get_quicknode_contract_stats(contract_address: str):
 def _get_nftport_transaction_stats(contract_address: str) -> int:
     continuation = ""
     sales = 0
+    flag = False
     try:
         while True:
             response = _execute_nftport_transactions(
@@ -421,10 +422,13 @@ def _get_nftport_transaction_stats(contract_address: str) -> int:
                 if transaction_date > TRANSACTION_START_LIMIT:
                     continue
                 if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    flag = True
                     break
                 if t.get("type") == "sale" and t.get("price_details"):
                     sales += 1
             if not continuation:
+                break
+            if flag:
                 break
     except Exception:
         print(f"Following error occurred for contract {contract_address}")
@@ -435,6 +439,7 @@ def _get_nftport_transaction_stats(contract_address: str) -> int:
 def _get_alchemy_transaction_stats(contract_address: str) -> int:
     page_key = None
     sales = 0
+    flag = False
     try:
         while True:
             response = _execute_alchemy_transactions(
@@ -451,10 +456,13 @@ def _get_alchemy_transaction_stats(contract_address: str) -> int:
                     # Exclude mint and burn
                     continue
                 if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    flag = True
                     break
                 if t.get("value"):
                     sales += 1
             if not page_key:
+                break
+            if flag:
                 break
     except Exception:
         print(f"Following error occurred for contract {contract_address}")
@@ -465,6 +473,7 @@ def _get_alchemy_transaction_stats(contract_address: str) -> int:
 def _get_moralis_transaction_stats(contract_address: str) -> int:
     cursor = None
     sales = 0
+    flag = False
     try:
         while True:
             response = _execute_moralis_transactions(
@@ -481,12 +490,15 @@ def _get_moralis_transaction_stats(contract_address: str) -> int:
                     # Exclude mint and burn
                     continue
                 if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                    flag = True
                     break
                 price = int(t.get("value", 0))
                 if price > 0:
                     # Moralis bundles sales together with transfer, value > 0 means sale
                     sales += 1
             if not cursor:
+                break
+            if flag:
                 break
     except Exception:
         print(f"Following error occurred for contract {contract_address}")
