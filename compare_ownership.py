@@ -16,6 +16,7 @@ ALCHEMY_BASE_URL = f"https://eth-mainnet.alchemyapi.io/nft/v2/{ALCHEMY_API_KEY}"
 MORALIS_API_KEY = "API-KEY"
 MORALIS_BASE_URL = "https://deep-index.moralis.io/api/v2"
 QUICKNODE_URL = "QUICKNODE-URL"
+OPENSEA_API_KEY = "API-KEY"
 
 # Most prominent NFT wallets as reported here- https://www.nftqt.com/the-nft-whale-directory-50-top-nft-buyers-whales/
 wallets = [
@@ -49,6 +50,7 @@ class WalletStats:
     alchemy_nfts_count: int = 0
     quicknode_nfts_count: int = 0
     moralis_nfts_count: int = 0
+    opensea_nfts_count: int = 0
 
 
 @dataclass(frozen=False)
@@ -57,6 +59,7 @@ class GlobalProviderStats:
     total_alchemy_nfts_count: int = 0
     total_quicknode_nfts_count: int = 0
     total_moralis_nfts_count: int = 0
+    total_opensea_nfts_count: int = 0
 
 
 def build_http_client(
@@ -142,6 +145,24 @@ def _execute_quicknode_request(address: str):
     return response.json()
 
 
+def _execute_opensea_request(address: str, cursor: str):
+    url = "https://api.opensea.io/api/v1/assets"
+    querystring = {
+        "owner": address,
+        "limit": 50
+    }
+    if cursor:
+        querystring["cursor"] = cursor
+    headers = {
+        'Content-Type': "application/json",
+        'X-API-KEY': OPENSEA_API_KEY
+    }
+    client = build_http_client()
+    response = client.get(
+        url, headers=headers, params=querystring)
+    return response.json()
+
+
 def _get_nftport_stats(address: str):
     count = 0
     try:
@@ -190,6 +211,23 @@ def _get_moralis_stats(address: str):
     return count
 
 
+def _get_opensea_stats(address: str):
+    count = 0
+    cursor = ""
+    try:
+        while True:
+            response = _execute_opensea_request(
+                address=address, cursor=cursor)
+            count += len(response.get("assets", []))
+            cursor = response.get("next")
+            if not cursor:
+                break
+    except Exception:
+        print(f"Following error occurred for address {address}")
+        print(traceback.format_exc())
+    return count
+
+
 def _clear():
     with open(STATS_OUTPUT_FILE_PATH, "w") as f:
         f.write("")
@@ -209,17 +247,21 @@ def main():
         wallet_stats.alchemy_nfts_count = _get_alchemy_stats(address)
         wallet_stats.quicknode_nfts_count = _get_quicknode_stats(address)
         wallet_stats.moralis_nfts_count = _get_moralis_stats(address)
+        wallet_stats.opensea_nfts_count = _get_opensea_stats(address)
         gloabl_stats.total_nftport_nfts_count += wallet_stats.nftport_nfts_count
         gloabl_stats.total_alchemy_nfts_count += wallet_stats.alchemy_nfts_count
         gloabl_stats.total_quicknode_nfts_count += wallet_stats.quicknode_nfts_count
         gloabl_stats.total_moralis_nfts_count += wallet_stats.moralis_nfts_count
+        gloabl_stats.total_opensea_nfts_count += wallet_stats.opensea_nfts_count
         wallets_stats.append(wallet_stats)
+        print(wallet_stats)
     _clear()
     _log("## Global stats of top 20 most prominent wallets")
     _log(f"\nNFTPort total count: {gloabl_stats.total_nftport_nfts_count}")
     _log(f"\nAlchemy total count: {gloabl_stats.total_alchemy_nfts_count}")
     _log(f"\nQuickNode total count: {gloabl_stats.total_quicknode_nfts_count}")
     _log(f"\nMoralis total count: {gloabl_stats.total_moralis_nfts_count}")
+    _log(f"\nOpenSea total count: {gloabl_stats.total_opensea_nfts_count}")
     _log("\n\nStats by wallet")
     for stats in wallets_stats:
         _log(f"\n\nWallet address: {stats.address}")
@@ -227,6 +269,7 @@ def main():
         _log(f"\nAlchemy NFTs count: {stats.alchemy_nfts_count}")
         _log(f"\nQuickNode NFTs count: {stats.quicknode_nfts_count}")
         _log(f"\nMoralis NFTs count: {stats.moralis_nfts_count}")
+        _log(f"\nOpensea NFTs count: {stats.opensea_nfts_count}")
 
 
 if __name__ == '__main__':
