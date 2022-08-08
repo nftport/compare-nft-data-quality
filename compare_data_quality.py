@@ -17,6 +17,7 @@ PROCESS_COUNT = 64
 TOP_K_COLLECTIONS = 10000  # Max 10000
 TOP_COLLECTIONS_PATH = "top_collections.csv"
 STATS_OUTPUT_FILE_PATH = "stats.md"
+STATS_BACKUP_OUTPUT_FILE_PATH = "stats_backup.md"
 
 NFTPORT_API_KEY = "API-KEY"
 ALCHEMY_API_KEY = "API-KEY"
@@ -30,9 +31,7 @@ FROM_BLOCK = 15191473  # Alchemy gives results in ascending order for transactio
 # Remember to change this value depending on the date you are running the script
 
 PROVIDERS = ["nftport", "alchemy", "moralis", "quicknode"]
-TRANSACTION_START_LIMIT = datetime.utcnow()
-TRANSACTION_LOOKBACK_LIMIT = datetime.utcnow() - timedelta(days=7)
-
+TIMEOUT = 150
 NULL_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
@@ -83,7 +82,7 @@ def build_http_client(
         total=total_retries,
         backoff_factor=backoff_factor,
         status_forcelist=[429, 500, 502, 503, 504],
-        method_whitelist=["HEAD", "GET", "OPTIONS"]
+        method_whitelist=["HEAD", "GET", "POST", "OPTIONS"]
     )
     adapter = HTTPAdapter(max_retries=retry_strategy)
     http = requests.Session()
@@ -105,7 +104,7 @@ def _execute_nftport_request(contract_address: str, page_number: int):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json()
 
 
@@ -123,7 +122,7 @@ def _execute_nftport_transactions(contract_address: str, continuation: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json()
 
 
@@ -138,7 +137,7 @@ def _get_nftport_floor_price(contract_address: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json().get("statistics", {}).get("floor_price")
 
 
@@ -154,7 +153,7 @@ def _execute_alchemy_request(contract_address: str, start_token: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json()
 
 
@@ -183,7 +182,7 @@ def _execute_alchemy_transactions(contract_address: str, page_key: str):
     }
     client = build_http_client()
     response = client.post(
-        url, headers=headers, data=json.dumps(data))
+        url, headers=headers, data=json.dumps(data), timeout=TIMEOUT)
     return response.json()
 
 
@@ -197,7 +196,7 @@ def _get_token_supply(contract_address: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring).json()
+        url, headers=headers, params=querystring, timeout=TIMEOUT).json()
     supply = response.get("contractMetadata", {}).get("totalSupply")
     if supply:
         return int(supply)
@@ -213,7 +212,7 @@ def _get_alchemy_floor_price(contract_address: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring).json()
+        url, headers=headers, params=querystring, timeout=TIMEOUT).json()
     return response.get("openSea", {}).get("floorPrice")
 
 
@@ -231,7 +230,7 @@ def _execute_moralis_request(contract_address: str, cursor: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json()
 
 
@@ -249,7 +248,7 @@ def _execute_moralis_transactions(contract_address: str, cursor: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json()
 
 
@@ -264,7 +263,7 @@ def _get_moralis_floor_price(contract_address: str):
     }
     client = build_http_client()
     response = client.get(
-        url, headers=headers, params=querystring)
+        url, headers=headers, params=querystring, timeout=TIMEOUT)
     return response.json().get("price")
 
 
@@ -285,7 +284,7 @@ def _execute_quicknode_request(contract_address: str, page_number: int):
     }
     client = build_http_client()
     response = client.post(
-        QUICKNODE_URL, headers=headers, data=data)
+        QUICKNODE_URL, headers=headers, data=data, timeout=TIMEOUT)
     return response.json()
 
 
@@ -406,7 +405,11 @@ def _get_quicknode_contract_stats(contract_address: str):
     return stats
 
 
-def _get_nftport_transaction_stats(contract_address: str) -> int:
+def _get_nftport_transaction_stats(
+        contract_address: str,
+        transaction_start_limit: datetime,
+        transaction_lookback_limit: datetime
+) -> int:
     continuation = ""
     sales = 0
     flag = False
@@ -419,9 +422,9 @@ def _get_nftport_transaction_stats(contract_address: str) -> int:
             for t in transactions:
                 transaction_date = datetime.fromisoformat(
                     t.get("transaction_date"))
-                if transaction_date > TRANSACTION_START_LIMIT:
+                if transaction_date > transaction_start_limit:
                     continue
-                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                if transaction_date < transaction_lookback_limit:
                     flag = True
                     break
                 if t.get("type") == "sale" and t.get("price_details"):
@@ -436,7 +439,11 @@ def _get_nftport_transaction_stats(contract_address: str) -> int:
     return sales
 
 
-def _get_alchemy_transaction_stats(contract_address: str) -> int:
+def _get_alchemy_transaction_stats(
+        contract_address: str,
+        transaction_start_limit: datetime,
+        transaction_lookback_limit: datetime
+) -> int:
     page_key = None
     sales = 0
     flag = False
@@ -449,13 +456,13 @@ def _get_alchemy_transaction_stats(contract_address: str) -> int:
             for t in transactions:
                 transaction_date = datetime.fromisoformat(
                     t.get("metadata").get("blockTimestamp")[:-1])
-                if transaction_date > TRANSACTION_START_LIMIT:
+                if transaction_date > transaction_start_limit:
                     continue
                 if t.get("fromAddress") == NULL_ADDRESS or t.get(
                         "toAddress") == NULL_ADDRESS:
                     # Exclude mint and burn
                     continue
-                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                if transaction_date < transaction_lookback_limit:
                     flag = True
                     break
                 if t.get("value"):
@@ -470,7 +477,11 @@ def _get_alchemy_transaction_stats(contract_address: str) -> int:
     return sales
 
 
-def _get_moralis_transaction_stats(contract_address: str) -> int:
+def _get_moralis_transaction_stats(
+        contract_address: str,
+        transaction_start_limit: datetime,
+        transaction_lookback_limit: datetime
+) -> int:
     cursor = None
     sales = 0
     flag = False
@@ -483,13 +494,13 @@ def _get_moralis_transaction_stats(contract_address: str) -> int:
             for t in transactions:
                 transaction_date = datetime.fromisoformat(
                     t.get("block_timestamp")[:-1])
-                if transaction_date > TRANSACTION_START_LIMIT:
+                if transaction_date > transaction_start_limit:
                     continue
                 if t.get("from_address") == NULL_ADDRESS or t.get(
                         "to_address") == NULL_ADDRESS:
                     # Exclude mint and burn
                     continue
-                if transaction_date < TRANSACTION_LOOKBACK_LIMIT:
+                if transaction_date < transaction_lookback_limit:
                     flag = True
                     break
                 price = int(t.get("value", 0))
@@ -513,6 +524,16 @@ def _clear():
 
 def _log(line: str):
     with open(STATS_OUTPUT_FILE_PATH, "a") as f:
+        f.write(line)
+
+
+def _clear_backup():
+    with open(STATS_BACKUP_OUTPUT_FILE_PATH, "w") as f:
+        f.write("")
+
+
+def _log_backup(line: str):
+    with open(STATS_BACKUP_OUTPUT_FILE_PATH, "a") as f:
         f.write(line)
 
 
@@ -540,6 +561,26 @@ def _write_stats(contracts: List[CompareContractStats]):
             _write_provider_contract_stats(provider_stats)
         _log(
             f"\n\n---------------------------------------------------------\n")
+
+
+def _backup_write_stats(contract: CompareContractStats):
+    _log_backup(
+        f"\n---------------------------------------------------------\n")
+    _log_backup(f"\nAddress:  {contract.address}")
+    _log_backup(f"\nSlug:  {contract.slug}")
+    _log_backup(f"\nToken supply:   {contract.token_supply}")
+    for provider in PROVIDERS:
+        provider_stats = getattr(contract, provider)
+        _log_backup(f"\n\n{provider}:")
+        _log_backup(f"\nNumber of NFTs found:   {provider_stats.num_nfts}")
+        _log_backup(
+            f"\nNumber of NFTs with metadata:   {provider_stats.num_has_metadata}")
+        _log_backup(
+            f"\nNumber of NFTs with cached images:   {provider_stats.num_has_cached_image}")
+        _log_backup(
+            f"\nNumber of transactions with sale price:   {provider_stats.num_sale_transactions}")
+        _log_backup(
+            f"\nFloor price available:   {provider_stats.has_floor_price}")
 
 
 def _write_global_stats(
@@ -585,11 +626,12 @@ def _calculate_global_stats(
     return global_stats
 
 
-def _run_thread(df, is_get_transactions: bool):
+def _run_thread(df, is_get_transactions: bool, thread_id: int):
     contract_stats = []
     df = df.reset_index()
     for index, row in df.iterrows():
         address = row["contract_address"]
+        print(f"Thread {thread_id}: Processing {index}")
         try:
             token_supply = _get_token_supply(contract_address=address)
             nftport_stats = _get_nftport_contract_stats(
@@ -603,27 +645,40 @@ def _run_thread(df, is_get_transactions: bool):
                 contract_address=address
             )
             if is_get_transactions:
+                transaction_start_limit = datetime.utcnow()
+                transaction_lookback_limit = datetime.utcnow() - timedelta(
+                    days=7)
                 nftport_stats.num_sale_transactions = _get_nftport_transaction_stats(
-                    contract_address=address)
-                alchemy_stats.num_sale_transactions = _get_alchemy_transaction_stats(
-                    contract_address=address)
-                moralis_stats.num_sale_transactions = _get_moralis_transaction_stats(
-                    contract_address=address)
-                # Quicknode does not have transactions by contract as of yet
-            contract_stats.append(
-                CompareContractStats(
-                    address=address,
-                    slug=row["slug"],
-                    token_supply=token_supply,
-                    nftport=nftport_stats,
-                    alchemy=alchemy_stats,
-                    moralis=moralis_stats,
-                    quicknode=quicknode_stats
+                    contract_address=address,
+                    transaction_start_limit=transaction_start_limit,
+                    transaction_lookback_limit=transaction_lookback_limit
                 )
+                alchemy_stats.num_sale_transactions = _get_alchemy_transaction_stats(
+                    contract_address=address,
+                    transaction_start_limit=transaction_start_limit,
+                    transaction_lookback_limit=transaction_lookback_limit
+                )
+                moralis_stats.num_sale_transactions = _get_moralis_transaction_stats(
+                    contract_address=address,
+                    transaction_start_limit=transaction_start_limit,
+                    transaction_lookback_limit=transaction_lookback_limit
+                )
+                # Quicknode does not have transactions by contract as of yet
+            compare_contract_stat = CompareContractStats(
+                address=address,
+                slug=row["slug"],
+                token_supply=token_supply,
+                nftport=nftport_stats,
+                alchemy=alchemy_stats,
+                moralis=moralis_stats,
+                quicknode=quicknode_stats
             )
+            contract_stats.append(compare_contract_stat)
+            _backup_write_stats(compare_contract_stat)
         except Exception:
             print(f"Following error occurred for contract {address}")
             print(traceback.format_exc())
+    print(f"Thread {thread_id} completed")
     return contract_stats
 
 
@@ -635,12 +690,13 @@ def main():
     df = pd.read_csv(TOP_COLLECTIONS_PATH)[:TOP_K_COLLECTIONS]
     is_get_transactions = True
     patches = _get_patches(df)
+    _clear_backup()
     with concurrent.futures.ThreadPoolExecutor(
             max_workers=PROCESS_COUNT) as executor:
         futures = []
         for i in range(len(patches)):
             future = executor.submit(
-                _run_thread, patches[i], is_get_transactions)
+                _run_thread, patches[i], is_get_transactions, i)
             futures.append(future)
             time.sleep(0.1)
         contract_stats = []
@@ -648,9 +704,10 @@ def main():
             res = f.result()
             if res:
                 contract_stats.extend(res)
+    print("Completed all requests")
     global_stats = _calculate_global_stats(contract_stats)
+    print("Completed calculating stats")
     _write_global_stats(global_stats)
-    _write_stats(contract_stats)
     print("Completed writing report!")
 
 
