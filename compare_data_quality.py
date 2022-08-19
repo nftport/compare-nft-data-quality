@@ -259,7 +259,7 @@ def _get_moralis_floor_price(contract_address: str):
     }
     headers = {
         'Content-Type': "application/json",
-        'Authorization': MORALIS_API_KEY
+        'X-API-Key': MORALIS_API_KEY
     }
     client = build_http_client()
     response = client.get(
@@ -708,6 +708,7 @@ def main():
     global_stats = _calculate_global_stats(contract_stats)
     print("Completed calculating stats")
     _write_global_stats(global_stats)
+    _write_stats(contract_stats)
     print("Completed writing report!")
 
 
